@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "ray-job-monitor-enhanced": {
+      "command": "python",
+      "args": ["/home/asaha/ray-summit-2025/src/mcp/ray_job_monitor_enhanced_mcp.py"],
+      "env": {
+        "PYTHONPATH": "/home/asaha/ray-summit-2025/src/mcp"
+      },
+      "description": "Enhanced Ray job monitor with REST API and log analysis"
+    },
+    "ray-job-monitor-legacy": {
+      "command": "python",
+      "args": ["/home/asaha/ray-summit-2025/src/mcp/ray_job_monitor_mcp.py"],
+      "env": {
+        "PYTHONPATH": "/home/asaha/ray-summit-2025/src/mcp"
+      },
+      "description": "Original log-based Ray job monitor"
+    }
+  }
+}

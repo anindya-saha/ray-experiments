@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "ray-job-monitor": {
+      "command": "python",
+      "args": ["/home/asaha/ray-summit-2025/ray_job_monitor_mcp.py"],
+      "env": {
+        "PYTHONPATH": "/home/asaha/ray-summit-2025"
+      }
+    }
+  }
+}
