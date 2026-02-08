@@ -75,6 +75,7 @@ import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 import ray
+from ray.actor import ActorHandle
 from ray.util.actor_pool import ActorPool
 from ray.util.placement_group import placement_group, remove_placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
@@ -484,12 +485,12 @@ class PooledKDTrainer:
         self.config = config
 
         # Teacher pool
-        self.teacher_replicas: List[ray.actor.ActorHandle] = []
+        self.teacher_replicas: List[ActorHandle] = []
         self.teacher_pool: Optional[ActorPool] = None
         self.teacher_placement_group = None
 
         # Student pool
-        self.student_workers: List[ray.actor.ActorHandle] = []
+        self.student_workers: List[ActorHandle] = []
         self.student_placement_group = None
 
         # DDP coordination
