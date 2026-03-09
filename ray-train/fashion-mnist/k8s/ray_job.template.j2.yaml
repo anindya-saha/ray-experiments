@@ -1,0 +1,139 @@
+apiVersion: ray.io/v1
+kind: RayJob
+metadata:
+  name: {{ JOB_NAME }}
+  namespace: {{ NAMESPACE }}
+spec:
+  # submissionMode: K8sJobMode creates a Kubernetes Job for the submitter pod
+  # instead of running the entrypoint directly on the head node.
+  submissionMode: "K8sJobMode"
+  entrypoint: >-
+    python /home/ray/fashion-mnist/train.py
+    --config /home/ray/fashion-mnist/configs/config.yaml
+{%- for override in OVERRIDES %}
+    --override {{ override }}
+{%- endfor %}
+  shutdownAfterJobFinishes: true
+  ttlSecondsAfterFinished: 60
+
+  # The submitter pod is responsible for submitting the Ray job to the cluster.
+  # KubeRay injects the main container command; we only need to provide the
+  # container image and any init containers / volumes.
+  submitterPodTemplate:
+    spec:
+      serviceAccountName: {{ SERVICE_ACCOUNT }}
+      nodeSelector:
+        beta.kubernetes.io/instance-type: {{ INSTANCE_TYPE }}
+      restartPolicy: Never
+      initContainers:
+        - name: data-download
+          image: {{ IMAGE_URI }}
+          imagePullPolicy: IfNotPresent
+          command: ["python", "/home/ray/fashion-mnist/data.py"]
+          args: ["--data-dir", "{{ DATA_DIR }}"]
+          volumeMounts:
+            - name: fsx-static
+              mountPath: /mnt/fsx-static
+      containers:
+        - name: train-job-submitter
+          image: {{ IMAGE_URI }}
+          imagePullPolicy: IfNotPresent
+      volumes:
+        - name: fsx-static
+          persistentVolumeClaim:
+            claimName: {{ FSX_CLAIM }}
+
+  # rayClusterSpec defines the ephemeral Ray cluster created for this job.
+  rayClusterSpec:
+    rayVersion: 2.54.0 # should match the Ray version in the container image
+    enableInTreeAutoscaling: false
+
+    # Ray head pod template.
+    headGroupSpec:
+      # See https://github.com/ray-project/kuberay/blob/master/docs/guidance/rayStartParams.md
+      # See https://docs.ray.io/en/latest/cluster/cli.html#ray-start
+      rayStartParams:
+        dashboard-host: 0.0.0.0
+        num-gpus: "0"
+        num-cpus: "0"
+        no-monitor: "true"
+      template:
+        spec:
+          serviceAccountName: {{ SERVICE_ACCOUNT }}
+          nodeSelector:
+            beta.kubernetes.io/instance-type: {{ INSTANCE_TYPE }}
+          containers:
+            - name: ray-head
+              image: {{ IMAGE_URI }}
+              imagePullPolicy: IfNotPresent
+              resources:
+                limits:
+                  cpu: {{ HEAD_CPU }}
+                  memory: {{ HEAD_MEMORY }}
+                requests:
+                  cpu: {{ HEAD_CPU }}
+                  memory: {{ HEAD_MEMORY }}
+              ports:
+                - containerPort: 6379
+                  name: gcs-server
+                - containerPort: 8265
+                  name: dashboard
+                - containerPort: 10001
+                  name: client
+                - containerPort: 8080
+                  name: metrics
+              volumeMounts:
+                - name: fsx-static
+                  mountPath: /mnt/fsx-static
+                - name: ray-logs
+                  mountPath: /tmp/ray
+          volumes:
+            - name: fsx-static
+              persistentVolumeClaim:
+                claimName: {{ FSX_CLAIM }}
+            - name: ray-logs
+              emptyDir: {}
+
+    workerGroupSpecs:
+      # replicas controls the number of worker pods in this group.
+      # min/maxReplicas are set equal to disable autoscaling - the launcher
+      # script also injects ray.scaling.num_workers as an OmegaConf override
+      # so the TorchTrainer ScalingConfig always matches.
+      - replicas: {{ NUM_WORKERS }}
+        minReplicas: {{ NUM_WORKERS }}
+        maxReplicas: {{ NUM_WORKERS }}
+        groupName: gpu-workers
+        # See https://github.com/ray-project/kuberay/blob/master/docs/guidance/rayStartParams.md
+        rayStartParams: {}
+        template:
+          spec:
+            serviceAccountName: {{ SERVICE_ACCOUNT }}
+            nodeSelector:
+              beta.kubernetes.io/instance-type: {{ INSTANCE_TYPE }}
+            tolerations:
+              - key: nvidia.com/gpu
+                operator: Exists
+                effect: NoSchedule
+            containers:
+              - name: ray-worker
+                image: {{ IMAGE_URI }}
+                imagePullPolicy: IfNotPresent
+                resources:
+                  limits:
+                    nvidia.com/gpu: {{ GPU_PER_WORKER }}
+                  requests:
+                    nvidia.com/gpu: {{ GPU_PER_WORKER }}
+                ports:
+                  - containerPort: 8080
+                    name: metrics
+                volumeMounts:
+                  - name: fsx-static
+                    mountPath: /mnt/fsx-static
+                  - name: ray-logs
+                    mountPath: /tmp/ray
+            volumes:
+              - name: fsx-static
+                persistentVolumeClaim:
+                  claimName: {{ FSX_CLAIM }}
+              - name: ray-logs
+                emptyDir: {}

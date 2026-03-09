@@ -1,5 +1,18 @@
+# ----- Org-specific / sensitive (do not push to public repos) -----
+**/k8s/acme/
+**/.env.acme
+**/configs/acme/
+
+# Generated YAML from Jinja2 templates
+**/generated/
+*.generated.yaml
+
+# Generated Outputs
 **/data/
 **/outputs/
+
+# Ignored projects
+ray-dashboard/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -208,3 +221,4 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+

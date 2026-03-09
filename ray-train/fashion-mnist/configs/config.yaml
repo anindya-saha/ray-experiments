@@ -1,0 +1,31 @@
+model:
+  hidden_dim: 3840
+  mlp_dim: 768
+  image_size: 28
+  patch_size: 7
+  num_layers: 12
+  num_heads: 8
+  num_classes: 10
+
+training:
+  strategy: fsdp
+  epochs: 1
+  learning_rate: 0.001
+  batch_size: 128
+  use_float16: false
+  log_interval: 10
+  data_dir: /mnt/fsx/users/<user>/ray-experiments/ray-train/
+  fsdp:
+    skip_model_shard: true
+    skip_cpu_offload: true
+  deepspeed_config: configs/ds_zero2.json
+
+ray:
+  scaling:
+    num_workers: 2
+    use_gpu: true
+  run:
+    name_prefix: fsdp_mnist
+    storage_path: /mnt/fsx/users/<user>/ray-experiments/ray-train/
+    failure:
+      max_failures: 2

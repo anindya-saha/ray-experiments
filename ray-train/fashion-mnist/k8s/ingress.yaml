@@ -1,0 +1,351 @@
+{{- range $teamName, $team := .Values.rbac.teams }}
+{{- if $team.rayClusters }}
+{{- range $clusterName, $cluster := $team.rayClusters }}
+---
+apiVersion: ray.io/v1
+kind: RayCluster
+metadata:
+  name: {{ $teamName }}-{{ $clusterName }}
+  namespace: {{ $team.namespace.name }}
+  labels:
+    app.kubernetes.io/name: {{ $.Chart.Name }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+    environment: {{ $.Values.global.env }}
+    team: {{ $teamName }}
+    cluster: {{ $clusterName }}
+spec:
+  rayVersion: {{ $cluster.version }}
+  enableInTreeAutoscaling: true
+  autoscalerOptions:
+    upscalingMode: {{ ($cluster.autoscaling).upscalingMode | default "Aggressive" }}
+    idleTimeoutSeconds: {{ ($cluster.autoscaling).idleTimeoutSeconds | default 60 }}
+  headGroupSpec:
+    rayStartParams:
+      dashboard-host: 0.0.0.0
+      ray-client-server-port: "10001"
+      num-cpus: "0"  # Prevent tasks from running on head node
+    template:
+      metadata:
+        labels:
+          observability.example.com/log-category: example
+          observability.example.com/log-group: ray-experiments
+      spec:
+        serviceAccountName: {{ $team.serviceAccount.name }}
+        {{- if $cluster.head.nodeType }}
+        nodeSelector:
+          node.kubernetes.io/instance-type: {{ $cluster.head.nodeType }}
+        {{- end }}
+        containers:
+          - name: ray-head
+            image: {{ $cluster.head.image }}
+            securityContext:
+              capabilities:
+                add:
+                  - SYS_PTRACE  # Required for py-spy flame graph profiling
+            resources:
+              limits:
+                cpu: {{ $cluster.head.resources.cpu }}
+                memory: {{ $cluster.head.resources.memory }}
+              requests:
+                cpu: {{ $cluster.head.resources.cpu }}
+                memory: {{ $cluster.head.resources.memory }}
+            env:
+            - name: RAY_GRAFANA_IFRAME_HOST
+              value: https://example.grafana.net
+            - name: RAY_GRAFANA_HOST
+              value: https://example.grafana.net
+            - name: RAY_PROMETHEUS_HOST
+              value: http://prometheus-operator-prometheus.prometheus.svc:9090
+            - name: AUTOSCALER_METRIC_PORT
+              value: "44217"
+            - name: DASHBOARD_METRIC_PORT
+              value: "44227"
+            - name: RAY_memory_usage_threshold
+              value: "0.95"  # Kill tasks at 95% memory to prevent OOM crash
+            {{- if $cluster.redis }}
+            {{- if $cluster.redis.enabled }}
+            - name: RAY_REDIS_ADDRESS
+              value: {{ $teamName }}-{{ $clusterName }}-redis-gcs-ft-svc.{{ $team.namespace.name }}.svc.cluster.local:6379
+            - name: RAY_external_storage_namespace
+              value: {{ $cluster.redis.storageNamespace | default (printf "%s-%s" $teamName $clusterName) }}
+            {{- end }}
+            {{- end }}
+            {{- if $cluster.head.jobStartTimeoutSeconds }}
+            - name: RAY_JOB_START_TIMEOUT_SECONDS
+              value: {{ $cluster.head.jobStartTimeoutSeconds | quote }}
+            {{- end }}
+            ports:
+            - containerPort: 6379
+              name: gcs-server
+            - containerPort: 8265
+              name: dashboard
+            - containerPort: 10001
+              name: client
+            - containerPort: 8000
+              name: serve
+            - containerPort: 8888
+              name: jupyter
+            - containerPort: 44217
+              name: metrics-as
+            - containerPort: 44227
+              name: metrics-db
+            volumeMounts:
+            - name: fsx-static
+              mountPath: /mnt/fsx-static
+            - name: ray-logs
+              mountPath: /tmp/ray
+            lifecycle:
+              preStop:
+                exec:
+                  command: ["/bin/sh", "-c", "ray stop"]
+          - name: vector
+            image: example.docker.example.com/observability/vector:0.38.0-debian
+            args:
+              - --config=/etc/vector/vector.yaml
+            resources:
+              requests:
+                cpu: 500m
+                memory: 1Gi
+              limits:
+                cpu: 500m
+                memory: 1Gi
+            volumeMounts:
+              - name: ray-logs
+                mountPath: /tmp/ray
+                readOnly: true
+              - name: vector-data
+                mountPath: /tmp/vector
+              - name: vector-config
+                mountPath: /etc/vector
+          - name: logrotate
+            image: dockerhub.docker.examplelabs.com/blacklabelops/logrotate:1.3
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+              limits:
+                cpu: 100m
+                memory: 256Mi
+            env:
+              - name: LOGROTATE_CRONSCHEDULE
+                value: "0 */10 * * * *"
+              - name: LOGS_DIRECTORIES
+                value: "/tmp/ray"
+              - name: LOG_FILE_ENDINGS
+                value: "log err out"
+              - name: LOGROTATE_SIZE
+                value: "10M"
+              - name: LOGROTATE_COPIES
+                value: "2"
+              - name: LOGROTATE_COMPRESSION
+                value: "nocompress"
+            volumeMounts:
+              - name: ray-logs
+                mountPath: /tmp/ray
+        volumes:
+        - name: ray-logs
+          emptyDir: {}
+        - name: vector-data
+          emptyDir: {}
+        - name: vector-config
+          configMap:
+            name: ray-cluster-vector-config
+        - name: fsx-static
+          persistentVolumeClaim:
+            claimName: fsx-static-claim
+  workerGroupSpecs:
+    {{- range $workerGroup := $cluster.workerGroups }}
+    - replicas: {{ $workerGroup.replicas }}
+      minReplicas: {{ $workerGroup.minReplicas }}
+      maxReplicas: {{ $workerGroup.maxReplicas }}
+      groupName: {{ $workerGroup.groupName }}
+      rayStartParams: {}
+      template:
+        metadata:
+          labels:
+            observability.example.com/log-category: example
+            observability.example.com/log-group: ray-experiments
+        spec:
+          serviceAccountName: {{ $team.serviceAccount.name }}
+          {{- if $workerGroup.nodeType }}
+          nodeSelector:
+            node.kubernetes.io/instance-type: {{ $workerGroup.nodeType }}
+          {{- end }}
+          containers:
+          - name: ray-worker
+            image: {{ $workerGroup.image }}
+            securityContext:
+              capabilities:
+                add:
+                  - SYS_PTRACE  # Required for py-spy flame graph profiling
+            ports:
+            - containerPort: 8080
+              name: metrics
+            env:
+            - name: RAY_memory_usage_threshold
+              value: "0.95"  # Kill tasks at 95% memory to prevent OOM crash
+            lifecycle:
+              preStop:
+                exec:
+                  command: ["/bin/sh", "-c", "ray stop"]
+            volumeMounts:
+            - name: fsx-static
+              mountPath: /mnt/fsx-static
+            - name: ray-logs
+              mountPath: /tmp/ray
+            resources:
+              limits:
+                cpu: {{ $workerGroup.resources.cpu | quote }}
+                memory: {{ $workerGroup.resources.memory }}
+                ephemeral-storage: {{ $workerGroup.resources.ephemeralStorage }}
+                {{- if and $workerGroup.resources.gpuCount (gt (int $workerGroup.resources.gpuCount) 0) }}
+                nvidia.com/gpu: {{ $workerGroup.resources.gpuCount }}
+                {{- end }}
+              requests:
+                cpu: {{ $workerGroup.resources.cpu | quote }}
+                memory: {{ $workerGroup.resources.memory }}
+                ephemeral-storage: {{ $workerGroup.resources.ephemeralStorage }}
+                {{- if and $workerGroup.resources.gpuCount (gt (int $workerGroup.resources.gpuCount) 0) }}
+                nvidia.com/gpu: {{ $workerGroup.resources.gpuCount }}
+                {{- end }}
+          - name: vector
+            image: example.docker.example.com/observability/vector:0.38.0-debian
+            args:
+              - --config=/etc/vector/vector.yaml
+            resources:
+              requests:
+                cpu: 500m
+                memory: 1Gi
+              limits:
+                cpu: 500m
+                memory: 1Gi
+            volumeMounts:
+              - name: ray-logs
+                mountPath: /tmp/ray
+                readOnly: true
+              - name: vector-data
+                mountPath: /tmp/vector
+              - name: vector-config
+                mountPath: /etc/vector
+          - name: logrotate
+            image: dockerhub.docker.example.com/blacklabelops/logrotate:1.3
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+              limits:
+                cpu: 100m
+                memory: 256Mi
+            env:
+              - name: LOGROTATE_CRONSCHEDULE
+                value: "0 */10 * * * *"
+              - name: LOGS_DIRECTORIES
+                value: "/tmp/ray"
+              - name: LOG_FILE_ENDINGS
+                value: "log err out"
+              - name: LOGROTATE_SIZE
+                value: "10M"
+              - name: LOGROTATE_COPIES
+                value: "2"
+              - name: LOGROTATE_COMPRESSION
+                value: "nocompress"
+            volumeMounts:
+              - name: ray-logs
+                mountPath: /tmp/ray
+          volumes:
+          - name: ray-logs
+            emptyDir: {}
+          - name: vector-data
+            emptyDir: {}
+          - name: vector-config
+            configMap:
+              name: ray-cluster-vector-config
+          - name: fsx-static
+            persistentVolumeClaim:
+              claimName: fsx-static-claim
+          tolerations:
+          - key: ray.io/node-type
+            operator: Equal
+            value: worker
+            effect: NoSchedule
+          - key: example.com/dedicated-node-pool
+            operator: Exists
+            effect: NoSchedule
+    {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $teamName }}-{{ $clusterName }}-dashboard-ingress
+  namespace: {{ $team.namespace.name }}
+  annotations:
+    cert-manager.io/cluster-issuer: <issuer>
+    cert-manager.io/common-name: {{ $teamName }}-{{ $clusterName }}-dashboard.{{ $.Values.global.clusterName }}.example.com
+    cert-manager.io/private-key-rotation-policy: Always
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  labels:
+    app: ray-cluster
+    app.kubernetes.io/name: ray-dashboard
+    team: {{ $teamName }}
+    cluster: {{ $clusterName }}
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: {{ $teamName }}-{{ $clusterName }}-dashboard.{{ $.Values.global.clusterName }}.example.com
+    http:
+      paths:
+      - path: /dashboard(/|$)(.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: {{ $teamName }}-{{ $clusterName }}-head-svc
+            port:
+              number: 8265
+  tls:
+  - hosts:
+    - {{ $teamName }}-{{ $clusterName }}-dashboard.{{ $.Values.global.clusterName }}.example.com
+    secretName: {{ $teamName }}-{{ $clusterName }}-dashboard-tls
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $teamName }}-{{ $clusterName }}-grpc-ingress
+  namespace: {{ $team.namespace.name }}
+  annotations:
+    cert-manager.io/cluster-issuer: <issuer>
+    cert-manager.io/common-name: {{ $teamName }}-{{ $clusterName }}-grpc.{{ $.Values.global.clusterName }}.example.com
+    cert-manager.io/private-key-rotation-policy: Always
+    nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  labels:
+    app: ray-cluster
+    app.kubernetes.io/name: ray-client-grpc
+    team: {{ $teamName }}
+    cluster: {{ $clusterName }}
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: {{ $teamName }}-{{ $clusterName }}-grpc.{{ $.Values.global.clusterName }}.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: {{ $teamName }}-{{ $clusterName }}-head-svc
+            port:
+              number: 10001
+  tls:
+  - hosts:
+    - {{ $teamName }}-{{ $clusterName }}-grpc.{{ $.Values.global.clusterName }}.example.com
+    secretName: {{ $teamName }}-{{ $clusterName }}-grpc-tls
+{{- end }}
+{{- end }}
+{{- end }}

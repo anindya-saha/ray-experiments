@@ -1,0 +1,117 @@
+apiVersion: ray.io/v1
+kind: RayJob
+metadata:
+  name: fashion-mnist
+spec:
+  submissionMode: "K8sJobMode"
+  entrypoint: python /home/ray/fashion-mnist/train.py --config /home/ray/fashion-mnist/configs/config.yaml --override training.strategy=fsdp --override ray.run.storage_path=/mnt/fsx-static/<user>/ray-experiments/ray-train/fashion_mnist/checkpoints --override training.data_dir=/mnt/fsx-static/<user>/ray-experiments/ray-train/fashion_mnist/data
+  shutdownAfterJobFinishes: true
+  ttlSecondsAfterFinished: 60
+
+  submitterPodTemplate:
+    spec:
+      serviceAccountName: <service-account>
+      nodeSelector:
+        beta.kubernetes.io/instance-type: ml.p5en.48xlarge
+      restartPolicy: Never
+      initContainers:
+        - name: data-download
+          image: example.docker.example.com/ray-train-fashion-mnist:1.0.0rc5
+          imagePullPolicy: IfNotPresent
+          command: ["python", "/home/ray/fashion-mnist/data.py"]
+          args: ["--data-dir", "/mnt/fsx-static/<user>/ray-experiments/ray-train/fashion_mnist/data"]
+          volumeMounts:
+            - name: fsx-static
+              mountPath: /mnt/fsx-static
+      containers:
+        - name: train-job-submitter
+          image: example.docker.example.com/ray-train-fashion-mnist:1.0.0rc5
+          imagePullPolicy: IfNotPresent
+      volumes:
+        - name: fsx-static
+          persistentVolumeClaim:
+            claimName: fsx-static-claim
+
+  rayClusterSpec:
+    rayVersion: 2.54.0
+    enableInTreeAutoscaling: false
+    headGroupSpec:
+      rayStartParams:
+        dashboard-host: 0.0.0.0
+        num-gpus: "0"
+        num-cpus: "0"
+        no-monitor: "true"
+      template:
+        spec:
+          serviceAccountName: example-sa
+          nodeSelector:
+            beta.kubernetes.io/instance-type: ml.p5en.48xlarge
+          containers:
+            - name: ray-head
+              image: example.docker.example.com/ray-train-fashion-mnist:1.0.0rc5
+              imagePullPolicy: IfNotPresent
+              resources:
+                limits:
+                  cpu: 4
+                  memory: 8Gi
+                requests:
+                  cpu: 4
+                  memory: 8Gi
+              ports:
+                - containerPort: 6379
+                  name: gcs-server
+                - containerPort: 8265
+                  name: dashboard
+                - containerPort: 10001
+                  name: client
+                - containerPort: 8080
+                  name: metrics
+              volumeMounts:
+                - name: fsx-static
+                  mountPath: /mnt/fsx-static
+                - name: ray-logs
+                  mountPath: /tmp/ray
+          volumes:
+            - name: fsx-static
+              persistentVolumeClaim:
+                claimName: fsx-static-claim
+            - name: ray-logs
+              emptyDir: {}
+    workerGroupSpecs:
+      - replicas: 4
+        minReplicas: 4
+        maxReplicas: 4
+        groupName: gpu-workers
+        rayStartParams: {}
+        template:
+          spec:
+            serviceAccountName: example-sa
+            nodeSelector:
+              beta.kubernetes.io/instance-type: ml.p5en.48xlarge
+            tolerations:
+              - key: nvidia.com/gpu
+                operator: Exists
+                effect: NoSchedule
+            containers:
+              - name: ray-worker
+                image: example.docker.example.com/ray-train-fashion-mnist:1.0.0rc5
+                imagePullPolicy: IfNotPresent
+                resources:
+                  limits:
+                    nvidia.com/gpu: 1
+                  requests:
+                    nvidia.com/gpu: 1
+                ports:
+                  - containerPort: 8080
+                    name: metrics
+                volumeMounts:
+                  - name: fsx-static
+                    mountPath: /mnt/fsx-static
+                  - name: ray-logs
+                    mountPath: /tmp/ray
+            volumes:
+              - name: fsx-static
+                persistentVolumeClaim:
+                  claimName: fsx-static-claim
+              - name: ray-logs
+                emptyDir: {}

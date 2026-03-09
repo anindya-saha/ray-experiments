@@ -1,0 +1,21 @@
+FROM rayproject/ray:2.54.0-py312-cu128
+
+USER root
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    zlib1g-dev libjpeg-dev libpng-dev git \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml uv.lock /home/ray/
+WORKDIR /home/ray
+
+RUN uv export --frozen --no-dev --no-hashes -o requirements.txt && \
+    uv pip install --system --no-cache \
+      --index-strategy unsafe-best-match \
+      --extra-index-url https://download.pytorch.org/whl/cu128 \
+      -r requirements.txt && \
+    rm requirements.txt
+
+USER ray
+
+CMD ["/bin/bash"]
